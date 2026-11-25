@@ -167,6 +167,18 @@
         <button id="trnmf-scan">Scan</button>
         <button id="trnmf-cancel">Cancel</button>
       </div>
+      <div class="trnmf-progress-wrap">
+        <div class="trnmf-ring">
+          <svg class="trnmf-ring-svg" viewBox="0 0 48 48" aria-hidden="true">
+            <circle class="trnmf-ring-track" cx="24" cy="24" r="20"></circle>
+            <circle class="trnmf-ring-arc" cx="24" cy="24" r="20" transform="rotate(-90 24 24)"></circle>
+          </svg>
+          <svg class="trnmf-ring-spin" viewBox="0 0 48 48" aria-hidden="true">
+            <circle cx="24" cy="24" r="20"></circle>
+          </svg>
+        </div>
+        <div class="trnmf-progress-count"></div>
+      </div>
       <div class="trnmf-progress"></div>
       <div class="trnmf-results"></div>
     </div>`;
@@ -181,6 +193,9 @@
     pages: panel.querySelector('#trnmf-pages'),
     scan: panel.querySelector('#trnmf-scan'),
     cancel: panel.querySelector('#trnmf-cancel'),
+    progressWrap: panel.querySelector('.trnmf-progress-wrap'),
+    ringArc: panel.querySelector('.trnmf-ring-arc'),
+    progressCount: panel.querySelector('.trnmf-progress-count'),
     progress: panel.querySelector('.trnmf-progress'),
     results: panel.querySelector('.trnmf-results'),
   };
@@ -203,6 +218,14 @@
 
   const abortFlag = { aborted: false };
 
+  // Progress ring: circumference of the r=20 arc circle in the 48px viewBox.
+  // Fraction is pages scanned / maxPages; the arc sweeps from 12 o'clock.
+  const RING_LEN = 2 * Math.PI * 20;
+  function setProgress(fraction) {
+    const f = Math.max(0, Math.min(1, fraction));
+    el.ringArc.style.strokeDashoffset = (RING_LEN * (1 - f)).toFixed(2);
+  }
+
   function fmtDate(ts) {
     if (!ts) return '';
     const d = new Date(ts);
@@ -211,6 +234,7 @@
   }
 
   function renderDone({ hits, scanned, pages, skipped, aborted, exhausted }) {
+    el.progressWrap.classList.remove('trnmf-scanning');
     el.progress.textContent =
       `${scanned} matches scanned over ${pages} page${pages === 1 ? '' : 's'}` +
       (skipped ? ` (${skipped} unreadable — rate limited)` : '') +
@@ -272,24 +296,32 @@
     if (!owner) { el.progress.textContent = 'Open a Valorant profile first.'; return; }
     if (!target.includes('#')) { el.progress.textContent = 'Target needs name#tag.'; return; }
 
+    const maxPages = Math.max(1, Math.min(60, parseInt(el.pages.value, 10) || 15));
+
     localStorage.setItem('trnmf-target', target);
     abortFlag.aborted = false;
     el.scan.disabled = true;
     el.cancel.classList.add('trnmf-visible');
     el.results.innerHTML = '';
     el.progress.textContent = 'starting…';
+    el.progressCount.textContent = `0 / ${maxPages * 20} matches`;
+    setProgress(0);
+    el.progressWrap.classList.add('trnmf-scanning');
 
     try {
       const result = await scan(owner, target, {
         playlist: el.playlist.value,
         season: '',
-        maxPages: Math.max(1, Math.min(60, parseInt(el.pages.value, 10) || 15)),
+        maxPages,
         abortFlag,
       }, (scanned, pages, skipped) => {
-        el.progress.textContent = `scanned ${scanned} matches (page ${pages})` + (skipped ? ` — ${skipped} rate-limited, retrying` : '') + '…';
+        setProgress(pages / maxPages);
+        el.progressCount.textContent = `${scanned} / ${maxPages * 20} matches`;
+        el.progress.textContent = `page ${pages} of ${maxPages}` + (skipped ? ` — ${skipped} rate-limited, retrying` : '') + '…';
       });
       renderDone(result);
     } catch (e) {
+      el.progressWrap.classList.remove('trnmf-scanning');
       el.progress.textContent = '';
       el.results.innerHTML = '';
       const div = document.createElement('div');
