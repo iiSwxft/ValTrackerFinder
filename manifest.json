@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "TRN Match Finder",
+  "version": "1.0.0",
+  "description": "Find the Valorant matches a tracker.gg profile shared with any player.",
+  "content_scripts": [
+    {
+      "matches": ["https://tracker.gg/valorant/profile/*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": ["https://api.tracker.gg/*"],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "trn-match-finder@local.dev",
+      "strict_min_version": "109.0"
+    }
+  }
+}
