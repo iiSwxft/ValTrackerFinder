@@ -21,7 +21,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://tracker.gg/valorant/profile/*"],
+      "matches": ["https://tracker.gg/valorant/*"],
       "js": ["content.js"],
       "css": ["panel.css"],
       "run_at": "document_idle"
