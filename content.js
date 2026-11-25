@@ -118,6 +118,7 @@
 
     const cache = loadCache(owner, opts.playlist);
     const preChecked = new Set(cache.checked);
+    const cachedHitIds = new Set(cache.hits.map(h => h.id));
 
     const hits = [];
     const seen = new Set();
@@ -182,7 +183,13 @@
         onProgress?.(scanned, pages, skipped, cached, 'ok');
 
         for (const r of results) {
-          if (!r || r.cached) continue;
+          if (!r) continue;
+          if (r.cached) {
+            // a known hit on this page satisfies first-hit mode — the card
+            // comes back through mergeHits, so just stop fetching here
+            if (opts.firstHitOnly && cachedHitIds.has(r.m.attributes.id)) stopEarly = true;
+            continue;
+          }
           const t = r.roster.get(target);
           if (!t) continue;
           const o = r.roster.get(normIgn(owner));
