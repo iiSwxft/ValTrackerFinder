@@ -209,6 +209,28 @@
 
 .trnmf-duo > div { flex: 1; min-width: 0; }
 
+.trnmf-checkrow { margin-bottom: 10px; }
+
+.trnmf-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--trnmf-muted);
+  font-size: 12px;
+  transition: color 0.15s ease;
+}
+
+.trnmf-check:hover { color: var(--trnmf-text); }
+
+#trnmf-panel input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--trnmf-accent);
+  cursor: pointer;
+}
+
 /* ---------- action buttons ---------- */
 
 .trnmf-actions {

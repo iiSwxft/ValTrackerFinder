@@ -6,7 +6,7 @@
   window.__trnmf = true;
 
   const API = 'https://api.tracker.gg/api/v2/valorant/standard';
-  const CONCURRENCY = 3;
+  const CONCURRENCY = 2;
 
   // ---------- helpers ----------
 
@@ -20,6 +20,8 @@
     return ign.trim().toLowerCase().replace(/\s+/g, ' ');
   }
 
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
   async function fetchJson(url, retries = 5) {
     for (let attempt = 0; attempt <= retries; attempt++) {
       let res;
@@ -27,15 +29,30 @@
         res = await fetch(url, { headers: { accept: 'application/json' } });
       } catch (e) {
         if (attempt === retries) throw new Error(`network error: ${e.message}`);
-      }
-      if (res && res.ok) return res.json();
-      if (res && (res.status === 429 || res.status >= 500) && attempt < retries) {
-        // TRN rate-limits the detail endpoint hard; 429s need real backoff.
-        const wait = res.status === 429 ? 3000 * (attempt + 1) : 800 * (attempt + 1);
-        await new Promise(r => setTimeout(r, wait));
+        await sleep(800 * (attempt + 1));
         continue;
       }
-      if (res) throw new Error(`API ${res.status} for ${url}`);
+      if (res.ok) return res.json();
+      if (res.status === 429) {
+        // TRN's Warden anti-bot wall looks like a plain 429 but demands a
+        // captcha — the scanner must treat it as a cooldown, not a retry.
+        const body = await res.text().catch(() => '');
+        if (body.includes('Warden::Challenge')) {
+          const err = new Error('TRN captcha wall (Warden)');
+          err.warden = true;
+          throw err;
+        }
+        if (attempt < retries) {
+          await sleep(2500 * (attempt + 1));
+          continue;
+        }
+        throw new Error(`API 429 for ${url}`);
+      }
+      if (res.status >= 500 && attempt < retries) {
+        await sleep(800 * (attempt + 1));
+        continue;
+      }
+      throw new Error(`API ${res.status} for ${url}`);
     }
     throw new Error('unreachable');
   }
@@ -58,6 +75,40 @@
     return players;
   }
 
+  // ---------- scan cache ----------
+  // Matches already checked are never re-fetched: repeat scans and deeper
+  // re-scans cost almost zero requests, which is what keeps Warden happy.
+
+  function cacheKey(owner, playlist) { return `trnmf-cache:${normIgn(owner)}:${playlist}`; }
+
+  function loadCache(owner, playlist) {
+    try {
+      const c = JSON.parse(localStorage.getItem(cacheKey(owner, playlist)) || '{}');
+      return {
+        checked: Array.isArray(c.checked) ? c.checked : [],
+        hits: Array.isArray(c.hits) ? c.hits : [],
+      };
+    } catch { return { checked: [], hits: [] }; }
+  }
+
+  function saveCache(owner, playlist, checked, hits) {
+    try {
+      localStorage.setItem(cacheKey(owner, playlist),
+        JSON.stringify({ checked: checked.slice(-1200), hits: hits.slice(0, 50) }));
+    } catch { /* quota or privacy mode — cache is a bonus, not a requirement */ }
+  }
+
+  function mergeHits(scanHits, cachedHits) {
+    const out = [];
+    const ids = new Set();
+    for (const h of [...scanHits, ...cachedHits]) {
+      if (ids.has(h.id)) continue;
+      ids.add(h.id);
+      out.push(h);
+    }
+    return out;
+  }
+
   // ---------- scan core ----------
 
   async function scan(owner, targetRaw, opts, onProgress) {
@@ -65,41 +116,73 @@
     const playlist = opts.playlist === 'all' ? '' : `&type=${opts.playlist}`;
     const base = `${API}/matches/riot/${encodeURIComponent(owner)}?platform=pc&season=${encodeURIComponent(opts.season || '')}${playlist}`;
 
+    const cache = loadCache(owner, opts.playlist);
+    const preChecked = new Set(cache.checked);
+
     const hits = [];
     const seen = new Set();
     let next = 0;
     let pages = 0;
     let scanned = 0;
     let skipped = 0;
+    let cached = 0;
+    let cooldowns = 0;
     let aborted = false;
+    let stopEarly = false;
     const shouldStop = () => opts.abortFlag.aborted;
 
-    while (next !== null && pages < opts.maxPages) {
+    // AIMD pacing: the gap between chunks shrinks while responses are clean
+    // and doubles on any throttle signal, riding just under TRN's limit.
+    let gap = 250;
+
+    while (next !== null && pages < opts.maxPages && !stopEarly) {
       if (shouldStop()) { aborted = true; break; }
       const list = await fetchJson(`${base}&next=${next}`);
       const matches = list?.data?.matches;
       if (!matches || matches.length === 0) break;
       pages++;
 
-      for (let i = 0; i < matches.length && !shouldStop(); i += CONCURRENCY) {
+      for (let i = 0; i < matches.length && !shouldStop() && !stopEarly; i += CONCURRENCY) {
         const chunk = matches.slice(i, i + CONCURRENCY);
-        const results = await Promise.all(chunk.map(async m => {
+        const settled = await Promise.allSettled(chunk.map(async m => {
           const id = m.attributes.id;
           if (seen.has(id)) return null;
           seen.add(id);
-          try {
-            const detail = await fetchJson(`${API}/matches/${id}`);
-            return { m, roster: extractRoster(detail.data) };
-          } catch {
-            skipped++;
-            return null;
-          }
+          if (preChecked.has(id)) { cached++; return { m, cached: true }; }
+          const detail = await fetchJson(`${API}/matches/${id}`);
+          return { m, roster: extractRoster(detail.data) };
         }));
+
+        let wardenHit = false;
+        let throttled = 0;
+        const results = [];
+        for (const s of settled) {
+          if (s.status === 'fulfilled') { results.push(s.value); continue; }
+          if (s.reason?.warden) wardenHit = true;
+          else { throttled++; skipped++; }
+        }
+
         scanned += chunk.length;
-        onProgress?.(scanned, pages, skipped);
+
+        if (wardenHit) {
+          cooldowns++;
+          if (cooldowns > 3) {
+            throw new Error('TRN captcha wall keeps re-triggering — wait a few minutes and scan again. Already-checked matches are cached and will not be re-fetched.');
+          }
+          onProgress?.(scanned, pages, skipped, cached, 'cooldown');
+          // retry the same chunk after cooling down; ids already fetched
+          // short-circuit through `seen`, so the retry costs nothing extra
+          i -= CONCURRENCY;
+          gap = Math.min(4000, gap * 2);
+          await sleep(45000 * cooldowns);
+          continue;
+        }
+
+        gap = throttled ? Math.min(4000, gap * 2) : Math.max(150, Math.round(gap * 0.85));
+        onProgress?.(scanned, pages, skipped, cached, 'ok');
 
         for (const r of results) {
-          if (!r) continue;
+          if (!r || r.cached) continue;
           const t = r.roster.get(target);
           if (!t) continue;
           const o = r.roster.get(normIgn(owner));
@@ -114,15 +197,19 @@
             targetAgent: t.agentName,
             ownerAgent: o?.agentName ?? null,
           });
+          if (opts.firstHitOnly) stopEarly = true;
         }
-        await new Promise(r => setTimeout(r, 200)); // stay under TRN's rate limit
+        await sleep(gap);
       }
 
       next = list.data.metadata?.next ?? null;
       if (typeof next !== 'number') next = null;
     }
 
-    return { hits, scanned, pages, skipped, aborted, exhausted: next === null };
+    const allHits = mergeHits(hits, cache.hits);
+    saveCache(owner, opts.playlist, [...preChecked, ...seen], allHits);
+
+    return { hits: allHits, scanned, pages, skipped, cached, aborted, exhausted: next === null, cooldowns };
   }
 
   // ---------- UI ----------
@@ -163,6 +250,12 @@
           <input id="trnmf-pages" type="number" min="1" max="60" value="15">
         </div>
       </div>
+      <div class="trnmf-row trnmf-checkrow">
+        <label class="trnmf-check" for="trnmf-firsthit">
+          <input id="trnmf-firsthit" type="checkbox" checked>
+          <span>Stop at first hit — fastest for refund lookups</span>
+        </label>
+      </div>
       <div class="trnmf-actions">
         <button id="trnmf-scan">Scan</button>
         <button id="trnmf-cancel">Cancel</button>
@@ -193,6 +286,7 @@
     pages: panel.querySelector('#trnmf-pages'),
     scan: panel.querySelector('#trnmf-scan'),
     cancel: panel.querySelector('#trnmf-cancel'),
+    firstHit: panel.querySelector('#trnmf-firsthit'),
     progressWrap: panel.querySelector('.trnmf-progress-wrap'),
     ringArc: panel.querySelector('.trnmf-ring-arc'),
     progressCount: panel.querySelector('.trnmf-progress-count'),
@@ -233,12 +327,13 @@
            d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   }
 
-  function renderDone({ hits, scanned, pages, skipped, aborted, exhausted }) {
+  function renderDone({ hits, scanned, pages, skipped, cached, aborted, exhausted }) {
     el.progressWrap.classList.remove('trnmf-scanning');
     el.progress.textContent =
       `${scanned} matches scanned over ${pages} page${pages === 1 ? '' : 's'}` +
-      (skipped ? ` (${skipped} unreadable — rate limited)` : '') +
-      (aborted ? ' — cancelled' : exhausted ? ' — full history' : ' — hit page cap');
+      (cached ? ` (${cached} served from cache)` : '') +
+      (skipped ? ` (${skipped} unreadable — throttled)` : '') +
+      (aborted ? ' — cancelled' : exhausted ? ' — full history' : ' — done');
     el.results.innerHTML = '';
     if (hits.length === 0) {
       const div = document.createElement('div');
@@ -314,10 +409,17 @@
         season: '',
         maxPages,
         abortFlag,
-      }, (scanned, pages, skipped) => {
+        firstHitOnly: el.firstHit.checked,
+      }, (scanned, pages, skipped, cached, phase) => {
         setProgress(pages / maxPages);
         el.progressCount.textContent = `${scanned} / ${maxPages * 20} matches`;
-        el.progress.textContent = `page ${pages} of ${maxPages}` + (skipped ? ` — ${skipped} rate-limited, retrying` : '') + '…';
+        if (phase === 'cooldown') {
+          el.progress.textContent = 'captcha wall hit — cooling down, scan resumes automatically…';
+        } else {
+          el.progress.textContent = `page ${pages} of ${maxPages}` +
+            (skipped ? ` — ${skipped} throttled` : '') +
+            (cached ? ` — ${cached} cached` : '') + '…';
+        }
       });
       renderDone(result);
     } catch (e) {
