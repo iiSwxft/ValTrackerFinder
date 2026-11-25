@@ -223,26 +223,23 @@
 
   const toggle = document.createElement('button');
   toggle.id = 'trnmf-toggle';
-  toggle.textContent = 'MATCH FINDER';
+  toggle.textContent = 'Match Finder';
 
   const panel = document.createElement('div');
   panel.id = 'trnmf-panel';
   panel.innerHTML = `
     <div class="trnmf-head">
-      <span>MATCH FINDER</span>
-      <button class="trnmf-close" title="Close">✕</button>
+      <span class="trnmf-title">Match Finder</span>
+      <button class="trnmf-close" title="Close" aria-label="Close">&times;</button>
     </div>
     <div class="trnmf-body">
+      <div class="trnmf-ownerline">Scanning <span class="trnmf-owner"></span></div>
       <div class="trnmf-row">
-        <span class="trnmf-label">Profile being scanned</span>
-        <div class="trnmf-owner"></div>
-      </div>
-      <div class="trnmf-row">
-        <label class="trnmf-label" for="trnmf-target">Find player (name#tag)</label>
-        <input id="trnmf-target" type="text" placeholder="kitten dad#aiden" spellcheck="false">
+        <label class="trnmf-label" for="trnmf-target">Player</label>
+        <input id="trnmf-target" type="text" placeholder="name#tag" spellcheck="false" autocomplete="off">
       </div>
       <div class="trnmf-row trnmf-duo">
-        <div>
+        <div class="trnmf-grow">
           <label class="trnmf-label" for="trnmf-playlist">Playlist</label>
           <select id="trnmf-playlist">
             <option value="competitive" selected>Competitive</option>
@@ -252,17 +249,15 @@
             <option value="all">All</option>
           </select>
         </div>
-        <div>
-          <label class="trnmf-label" for="trnmf-pages">Max pages (20/pg)</label>
+        <div class="trnmf-pages-col">
+          <label class="trnmf-label" for="trnmf-pages" title="20 matches per page">Pages</label>
           <input id="trnmf-pages" type="number" min="1" max="60" value="15">
         </div>
       </div>
-      <div class="trnmf-row trnmf-checkrow">
-        <label class="trnmf-check" for="trnmf-firsthit">
-          <input id="trnmf-firsthit" type="checkbox" checked>
-          <span>Stop at first hit — fastest for refund lookups</span>
-        </label>
-      </div>
+      <label class="trnmf-check" for="trnmf-firsthit">
+        <input id="trnmf-firsthit" type="checkbox" checked>
+        <span>Stop at first match</span>
+      </label>
       <div class="trnmf-actions">
         <button id="trnmf-scan">Scan</button>
         <button id="trnmf-cancel">Cancel</button>
@@ -308,12 +303,12 @@
 
   // tracker.gg is a SPA: owner changes without a reload, so poll cheaply.
   let currentOwner = ownerFromUrl();
-  el.owner.textContent = currentOwner ?? 'not on a profile page';
+  el.owner.textContent = currentOwner ?? '— (open a profile)';
   setInterval(() => {
     const o = ownerFromUrl();
     if (o !== currentOwner) {
       currentOwner = o;
-      el.owner.textContent = o ?? 'not on a profile page';
+      el.owner.textContent = o ?? '— (open a profile)';
     }
   }, 1000);
 
