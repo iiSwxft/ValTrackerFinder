@@ -349,6 +349,12 @@
       el.results.appendChild(div);
       return;
     }
+    if (hits.length === 1 && !aborted) {
+      el.progress.textContent += ' — opening match…';
+      try {
+        chrome.runtime.sendMessage({ type: 'trnmf-open', url: `https://tracker.gg/valorant/match/${hits[0].id}` });
+      } catch { /* extension context gone — the card link still works */ }
+    }
     for (const h of hits) {
       const url = `https://tracker.gg/valorant/match/${h.id}`;
       const card = document.createElement('div');
